@@ -25,9 +25,15 @@ pub async fn serve_content(req: HttpRequest) -> Result<NamedFile> {
         `routes` returns 'null' if the route entry doesn't exist
     */
     let response_file = if routes == "null" {
-        let page_404 = config["error_pages"]["404"].to_string().replace("\"", "");
-        status_code = StatusCode::NOT_FOUND;
-        format!("{}/{}", TEMPLATE_DIR, page_404)
+        let fallback = config["routes"]["*"].to_string().replace("\"", "");
+        if fallback == "null" {
+            let page_404 = config["error_pages"]["404"].to_string().replace("\"", "");
+            status_code = StatusCode::NOT_FOUND;
+            format!("{}/{}", TEMPLATE_DIR, page_404)
+        } else {
+            status_code = StatusCode::OK;
+            format!("{}/{}", TEMPLATE_DIR, fallback)
+        }
     } else {
         status_code = StatusCode::OK;
         format!("{}/{}", TEMPLATE_DIR, routes)
