@@ -1,54 +1,77 @@
-use actix_files::Files;
 use actix_web::{middleware, web, App, HttpServer};
+use actix_files::NamedFile;
+use actix_web::http::StatusCode;
+use actix_web::{HttpRequest, HttpResponse, Result};
+use std::path::Path;
 
 use std::env::set_var;
 
-mod config;
-mod error_pages;
-mod security;
-mod serve;
-mod setup_static;
-mod template;
+async fn serve_content(req: HttpRequest, config: web::Data<Config>) -> Result<HttpResponse> {
+    let req_path = format!("/{}", req.match_info().query("route"));
 
-use error_pages::generate_error_pages;
-use security::is_config_secure;
-use serve::serve_content;
-use setup_static::setup_static;
-use template::render_templates;
+    let status_code;
 
-fn binserve_init() {
-    // setup binserve configuration
-    config::setup_config();
+    let mut response_file = format!("{}/{}", &config.root, req_path);
 
-    // setup static files
-    setup_static().ok();
+    let p = Path::new(&response_file);
 
-    // validate routes for security vulnerabilities
-    is_config_secure();
+    if !p.exists() || p.is_dir() {
+        status_code = StatusCode::OK;
+        response_file = format!("{}/{}", &config.root, &config.index );
+    } else {
+        status_code = StatusCode::OK;
+    }
 
-    // generate static error pages
-    generate_error_pages();
+    Ok(NamedFile::open(response_file)?
+        .set_status_code(status_code)
+        .prefer_utf8(true)
+        .use_last_modified(true).into_response(&req)?)
+}
 
-    // render templates
-    render_templates();
+#[derive(Debug, Clone)]
+struct Config {
+    root: String,
+    index: String,
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // init binserve server config & files
-    binserve_init();
+    set_var("RUST_LOG", "actix_web=info");
+    env_logger::init();
 
-    let config = config::get_config();
+    let matches = clap::App::new("server")
+        .version("1.0")
+        .arg(clap::Arg::with_name("listen")
+            .short("l")
+            .long("listen")
+            .value_name("ADDRESS")
+            .help("Specify host and port to listen on default '0.0.0.0:5000'")
+            .env("BIND")
+            .default_value("0.0.0.0:5000")
+        )
+        .arg(clap::Arg::with_name("root")
+            .short("r")
+            .long("root")
+            .value_name("WEB_ROOT")
+            .help("Specify the web root to serve defaults to '.'")
+            .env("WEB_ROOT")
+            .default_value(".")
+        )
+        .arg(clap::Arg::with_name("index")
+            .short("i")
+            .long("index")
+            .value_name("INDEX")
+            .help("Specify the fallback file to serve defaults to 'index.html'")
+            .env("INDEX")
+            .default_value("index.html")
+        ).get_matches();
 
-    // enable/disable logging
-    let enable_logging = config["enable_logging"].to_string();
-    if enable_logging == "true" {
-        set_var("RUST_LOG", "actix_web=info");
-        env_logger::init();
-    }
+    let listen_addr = matches.value_of("listen").unwrap();
 
-    let host = config["server"]["host"].to_string().replace("\"", "");
-    let port = config["server"]["port"].to_string();
+    let cfg = Config{
+        index: matches.value_of("index").unwrap().to_owned(),
+        root: matches.value_of("root").unwrap().to_owned()
+    };
 
     // ASCII art banner always looks cool
     println!(
@@ -62,40 +85,20 @@ async fn main() -> std::io::Result<()> {
 
     // print out `host` and `port` of the server
     println!(
-        "\nYour server is up and running at http://{}:{}/\n",
-        host, port
+        "\nYour server is up and running at http://{}/\n",
+        listen_addr
     );
-
-    let directory_listing_enabled = config["directory_listing"].to_string();
 
     HttpServer::new(move || {
         //`.show_files_listing()` mode is set if directory listing is enabled in config
-        if directory_listing_enabled == "true" {
+        
             App::new()
-                // enable the logger middleware
-                .wrap(middleware::Logger::default())
-                .service(
-                    Files::new("/static", "static/assets/")
-                        .show_files_listing()
-                        .prefer_utf8(true)
-                        .use_last_modified(true)
-                )
-                // serve static files
-                .route("/{route:.*}", web::get().to(serve_content))
-        } else {
-            App::new()
-                // enable the logger middlware
-                .wrap(middleware::Logger::default())
-                .service(
-                    Files::new("/static", "static/assets/")
-                        .prefer_utf8(true)
-                        .use_last_modified(true)
-                )
-                // serve static files
-                .route("/{route:.*}", web::get().to(serve_content))
-        }
+            .data(cfg.clone())
+            // enable the logger middlware
+            .wrap(middleware::Logger::default())
+            .route("/{route:.*}", web::get().to(serve_content))
     })
-    .bind(format!("{}:{}", host, port))?
+    .bind(listen_addr)?
     .run()
     .await
 }
